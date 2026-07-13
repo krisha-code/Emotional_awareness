@@ -1,0 +1,22 @@
+FROM python:3.11-slim
+
+# System deps for OpenCV + librosa
+RUN apt-get update && apt-get install -y \
+    gcc g++ libgomp1 \
+    libglib2.0-0 libsm6 libxext6 libxrender-dev \
+    libsndfile1 ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+# Create directories for ML models and temp uploads
+RUN mkdir -p ml/face/models ml/text/models ml/speech/models ml/physiological/models uploads
+
+EXPOSE 5000
+
+CMD ["gunicorn", "-b", "0.0.0.0:5000", "--workers", "2", "--timeout", "120", "run:app"]

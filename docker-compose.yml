@@ -1,0 +1,110 @@
+version: "3.9"
+
+services:
+  # ─────────────────────────────────────────
+  # PostgreSQL — Persistent emotion history
+  # ─────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: emotion_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: emotion_user
+      POSTGRES_PASSWORD: emotion_pass
+      POSTGRES_DB: emotion_db
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U emotion_user -d emotion_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─────────────────────────────────────────
+  # Redis — Task queue & token blocklist
+  # ─────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: emotion_redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ─────────────────────────────────────────
+  # Flask Backend — REST API + ML inference
+  # ─────────────────────────────────────────
+  backend:
+    build:
+      context: ./backend
+      dockerfile: ../docker/Dockerfile.backend
+    container_name: emotion_backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql://emotion_user:emotion_pass@postgres:5432/emotion_db
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./backend:/app
+      - ml_models:/app/ml/models
+    ports:
+      - "5000:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "flask db upgrade && gunicorn -b 0.0.0.0:5000 --workers 2 --timeout 120 run:app"
+
+  # ─────────────────────────────────────────
+  # Celery Worker — Async inference tasks
+  # ─────────────────────────────────────────
+  celery_worker:
+    build:
+      context: ./backend
+      dockerfile: ../docker/Dockerfile.backend
+    container_name: emotion_celery
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql://emotion_user:emotion_pass@postgres:5432/emotion_db
+      REDIS_URL: redis://redis:6379/0
+    volumes:
+      - ./backend:/app
+      - ml_models:/app/ml/models
+    depends_on:
+      - redis
+      - backend
+    command: celery -A app.celery_app worker --loglevel=info --concurrency=2
+
+  # ─────────────────────────────────────────
+  # Vite Frontend — React dev server
+  # ─────────────────────────────────────────
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: ../docker/Dockerfile.frontend
+    container_name: emotion_frontend
+    restart: unless-stopped
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    ports:
+      - "5173:5173"
+    depends_on:
+      - backend
+    environment:
+      VITE_API_BASE_URL: http://localhost:5000
+
+volumes:
+  postgres_data:
+  ml_models:
